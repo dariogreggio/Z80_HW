@@ -1,5 +1,6 @@
 //http://z80-heaven.wikidot.com/instructions-set
 //https://gist.github.com/seanjensengrey/f971c20d05d4d0efc0781f2f3c0353da
+//UNIRE CON Z80 emu galaksija
 
 #include <stdio.h>
 #include <ctype.h>
@@ -16,16 +17,16 @@
 
 
 #include "Z80_hw_PIC.h"
+#ifndef __PIC32
+#include <libpic30.h>
+#endif
 
 
-#pragma check_stack(off)
-// #pragma check_pointer( off )
-#pragma intrinsic( _enable, _disable )
 
 #undef Z80_EXTENDED
 
 BYTE fExit=0;
-BYTE debug=0;
+extern BYTE debug;
 
 extern volatile BYTE keysFeedPtr;
 
@@ -34,10 +35,10 @@ BYTE DoHalt=0;
 WORD WDCnt=MAX_WATCHDOG;
 BYTE ColdReset=1;
 BYTE Pipe1;
-union __attribute__((__packed__)) {
+union /*__attribute__((__packed__))*/ {
 	SWORD x;
 	BYTE bb[4];
-	struct __attribute__((__packed__)) {
+	struct /*__attribute__((__packed__))*/ {
 		BYTE l;
 		BYTE h;
 //		BYTE u;		 bah no, sposto la pipe quando ci sono le istruzioni lunghe 4...
@@ -52,7 +53,11 @@ BYTE GetValue(SWORD t) {
   TRISE=0b11111111;
   mIOREQ=1; mMREQ=0; mWR=1; mRD=0; 
   DELAY_MEM_RD();
+#ifdef __PIC32
   return PORTE;
+#else
+  return PORTC;
+#endif
 	}
 
 BYTE InValue(BYTE t) {
@@ -61,7 +66,11 @@ BYTE InValue(BYTE t) {
   TRISE=0b11111111;
   mMREQ=1; mIOREQ=0; mWR=1; mRD=0; 
   DELAY_IO_RD();
+#ifdef __PIC32
   return PORTE;
+#else
+  return PORTC;
+#endif
 	}
 
 SWORD GetIntValue(SWORD t) {
@@ -75,11 +84,19 @@ SWORD GetIntValue(SWORD t) {
   TRISE=0b11111111;
   mIOREQ=1; mMREQ=0; mWR=1; mRD=0; 
   DELAY_MEM_RD();
+#ifdef __PIC32
   i=PORTE;
+#else
+  i=PORTC;
+#endif
   i <<= 8;
   LATB++;
   DELAY_MEM_RD();
+#ifdef __PIC32
   i |= PORTE;
+#else
+  i |= PORTC;
+#endif
   
 	return i;
 	}
@@ -99,10 +116,18 @@ BYTE GetPipe(SWORD t) {
   // FARE MACRO GetValue e usarla man mano nelle varie istruzioni...
   LATB++;
   DELAY_MEM_RD();
+#ifdef __PIC32
   Pipe2.bb[0] = PORTE;
+#else
+  Pipe2.bb[0] = PORTC;
+#endif
   LATB++;
   DELAY_MEM_RD();
+#ifdef __PIC32
   Pipe2.bb[1] = PORTE;
+#else
+  Pipe2.bb[1] = PORTC;
+#endif
 
 	return Pipe1;
 	}
@@ -115,7 +140,11 @@ void PutValue(SWORD t,BYTE t1) {
   mIOREQ=1; mMREQ=0; mRD=mWR=1;
   TRISE=0b00000000;
   DELAY_MEM_WR();
+#ifdef __PIC32
   LATE=t1;
+#else
+  LATC=t1; OCCHIO altri bit qua!
+#endif
   mWR=0;  
   }
 
@@ -127,14 +156,22 @@ void PutIntValue(SWORD t,SWORD t1) {
   mIOREQ=1; mMREQ=0; mRD=mWR=1;
   TRISE=0b00000000;
   DELAY_MEM_WR();
+#ifdef __PIC32
   LATE=LOWORD(t1);
+#else
+  LATC=LOWORD(t1); OCCHIO altri bit qua!
+#endif
   LATB++;
   DELAY_MEM_WR();
+#ifdef __PIC32
   LATE=HIWORD(t1);
+#else
+  LATC=HIWORD(t1); OCCHIO altri bit qua!
+#endif
   mWR=0;  
   }
 
-void OutValue(BYTE t,BYTE t1) {
+void OutValue(BYTE t,BYTE t1) {			// OCCHIO pare che siano 16bit anche I/O!
 
 // printf("rom_seg: %04x, p: %04x\n",rom_seg,p);
 
@@ -142,25 +179,64 @@ void OutValue(BYTE t,BYTE t1) {
   mMREQ=1; mIOREQ=0; mRD=mWR=1;
   TRISE=0b00000000;
   DELAY_IO_WR();
+#ifdef __PIC32
   LATE=t1;
+#else
+  LATC=t1; occhio
+#endif
   mWR=0;
 	}
 
 
-// http://clrhome.org/table/
-int Emulate(int mode) {
-  union __attribute__((__packed__)) Z_REG {
-    SWORD x;
-    struct __attribute__((__packed__)) { 
-      BYTE l;
-      BYTE h;
-      } b;
+union /*__attribute__((__packed__))*/ Z_REG {
+  SWORD x;
+  struct /*__attribute__((__packed__))*/ { 
+    BYTE l;
+    BYTE h;
+    } b;
 //    } _bc1,_de1,_hl1,_af1,_af2,_bc2,_de2,_hl2;
+  };
+union /*__attribute__((__packed__))*/ Z_REGISTERS {
+  BYTE  b[8];
+  union Z_REG r[4];
+  };
+
+#define ID_CARRY 0x1
+#define ID_ADDSUB 0x2
+#define ID_PV 0x4
+#define ID_HALFCARRY 0x10
+#define ID_ZERO 0x40
+#define ID_SIGN 0x80
+union /*__attribute__((__packed__))*/ REGISTRO_F {
+  BYTE b;
+  struct /*__attribute__((__packed__))*/ {
+    unsigned int Carry: 1;
+    unsigned int AddSub: 1;
+    unsigned int PV: 1;   // 1=pari 0=dispari
+    unsigned int unused: 1;
+    unsigned int HalfCarry: 1;
+    unsigned int unused2: 1;
+    unsigned int Zero: 1;
+    unsigned int Sign: 1;
     };
-	union __attribute__((__packed__)) Z_REGISTERS {
-		BYTE  b[8];
-	  union Z_REG r[4];
-		} regs1,regs2;
+  };
+union /*__attribute__((__packed__))*/ OPERAND {
+  BYTE *reg8;
+  WORD *reg16;
+  WORD mem;
+  };
+union /*__attribute__((__packed__))*/ RESULT {
+  struct /*__attribute__((__packed__))*/ {
+    BYTE l;
+    BYTE h;
+    } b;
+  WORD x;
+  DWORD d;
+  };
+    
+// http://clrhome.org/table/
+// https://wikiti.brandonw.net/index.php?title=Z80_Instruction_Set
+int Emulate(int mode) {
 /*Registers (http://www.z80.info/z80syntx.htm#LD)
 --------------
  A = 111
@@ -171,7 +247,9 @@ int Emulate(int mode) {
  H = 100
  L = 101*/
 #define _a regs1.r[3].b.l //
-	// in TEORIA, REGISTRO_F dovrebbe appartenere qua??
+	// in TEORIA, REGISTRO_F dovrebbe appartenere qua... ho patchato pop af push ecc, SISTEMARE!! _f.b
+  // n.b. anche che A/F sono invertiti rispetto agli altri, v. push/pop
+#define _f_af regs1.r[3].b.h //
 #define _b regs1.r[0].b.h
 #define _c regs1.r[0].b.l
 #define _d regs1.r[1].b.h
@@ -186,50 +264,29 @@ int Emulate(int mode) {
 #define WORKING_REG2 regs1.b[(Pipe1 ^ 1) & 7]
 //#define WORKING_REG_CB regs1.b[((Pipe2.b.l & 0x38) ^ 8) >> 3]
 #define WORKING_REG_CB regs1.b[(Pipe2.b.l ^ 1) & 7]
+#define WORKING_BITPOS (1 << ((Pipe2.b.l & 0x38) >> 3))
+#define WORKING_BITPOS2 (1 << ((Pipe2.b.h & 0x38) >> 3))
     
 	SWORD _pc=0;
 	SWORD _ix=0;
+#ifdef Z80_EXTENDED
+  BYTE _ixh,_ixl;     // UNIRE ovviamente! o usare LO/HIBYTE
+#endif
 	SWORD _iy=0;
+#ifdef Z80_EXTENDED
+  BYTE _iyh,_iyl;     // UNIRE ovviamente!
+#endif
 	SWORD _sp=0;
 	BYTE _i,_r;
 	BYTE IRQ_Mode=0;
 	BYTE IRQ_Enable1=0,IRQ_Enable2=0;
-#define ID_CARRY 0x1
-#define ID_ADDSUB 0x2
-#define ID_PV 0x4
-#define ID_HALFCARRY 0x10
-#define ID_ZERO 0x40
-#define ID_SIGN 0x80
-	union __attribute__((__packed__)) REGISTRO_F {
-    BYTE b;
-		struct __attribute__((__packed__)) {
-			unsigned int Carry: 1;
-			unsigned int AddSub: 1;
-			unsigned int PV: 1;
-			unsigned int unused: 1;
-			unsigned int HalfCarry: 1;
-			unsigned int unused2: 1;
-			unsigned int Zero: 1;
-			unsigned int Sign:   1;
-      };
-		} _fIRQ;
-	register union REGISTRO_F _f;
+  union Z_REGISTERS regs1,regs2;
+  union RESULT res1,res2,res3;
+//  union OPERAND op1,op2;
+	union REGISTRO_F _f;
 	union REGISTRO_F _f1;
-	register SWORD i;
-	register union __attribute__((__packed__)) OPERAND {
-    BYTE *reg8;
-    WORD *reg16;
-		WORD mem;
-    } op1,op2;
-register union __attribute__((__packed__)) RESULT {
-  struct __attribute__((__packed__)) {
-    BYTE l;
-    BYTE h;
-    } b;
-  WORD x;
-  DWORD d;
-  } res1,res2,res3;
-int c=0;
+	/*register*/ SWORD i;
+  int c=0;
 
 
 	_pc=0;
@@ -247,9 +304,11 @@ int c=0;
       LED1^=1;    // 42mS~ con SKYNET 7/6/20; 10~mS con Z80NE 10/7/21
       
       
-    }
-		if(ColdReset)
+      }
+
+		if(ColdReset) {
 			continue;
+      }
 
 
     
@@ -281,19 +340,14 @@ int c=0;
 			IRQ_Enable2=IRQ_Enable1; IRQ_Enable1=0;
 			PutValue(--_sp,HIBYTE(_pc));
 			PutValue(--_sp,LOBYTE(_pc));
-			_f1=_f;
-			PutValue(--_sp,_f1.b);
 			_pc=0x0066;
 			}
 		if(!mIRQ) {
 #warning FARE SOLO SU FRONTE DISCESA?! anche NMI??
 			if(IRQ_Enable1) {
-				IRQ_Enable1=0;
-				DoHalt=0;
+				IRQ_Enable1=0;    // ma non sono troppo sicuro... boh?
 				PutValue(--_sp,HIBYTE(_pc));
 				PutValue(--_sp,LOBYTE(_pc));
-				_f1=_f;
-				PutValue(--_sp,_f1.b);
 				switch(IRQ_Mode) {
 				  case 0:
 //						i=InValue(0) /*bus_dati*/;
@@ -322,11 +376,10 @@ int c=0;
     
     /*
     mRFSH ^= 1:
-    _r++;
 		// buttare fuori il valore di _r per il refresh... :)
     TRISE=0b00000000;
     mMREQ=1; mIOREQ=1; mWR=1; mRD=1; 
-    LATE=_r;
+    LATE=_r++;
     */
             
 		if(DoHalt)
@@ -341,24 +394,15 @@ int c=0;
  
     
     
-      if(!SW2) {        // test tastiera, me ne frego del repeat/rientro :)
-       // continue;
-        __delay_ms(100); ClrWdt();
-#ifdef NEZ80
-        mRESET=1;
-#endif
-        }
 //      if(!SW1)        // test tastiera
 //        keysFeedPtr=0;
 
-      LED2^=1;    // ~700nS 7/6/20, ~600 con 32bit 10/7/21 MA NON FUNZIONA/visualizza!! verificare
+      LED1^=1;    // ~700nS 7/6/20, ~600 con 32bit 10/7/21 MA NON FUNZIONA/visualizza!! verificare
 
     
 /*      if(_pc >= 0x4000) {
         ClrWdt();
         }*/
-  
-  
   
 		switch(GetPipe(_pc++)) {
 			case 0:   // NOP
@@ -394,10 +438,10 @@ int c=0;
         
 aggInc:
       	_f.Zero=res3.b.l ? 0 : 1;
-        _f.Sign=(((signed char)res3.b.l) < 0) ? 1 : 0;
+        _f.Sign=res3.b.l & 0x80 ? 1 : 0;
         _f.AddSub=0;
       	_f.PV= res3.b.l == 0x80 ? 1 : 0; //P = 1 if x=7FH before, else 0
-      	_f.HalfCarry= res3.b.l & 0xf == 0 ? 1 : 0; // INC x      1 if carry from bit 3 else 0 
+      	_f.HalfCarry= (res3.b.l & 0xf) == 0 ? 1 : 0; // INC x      1 if carry from bit 3 else 0 
         break;
 
 			case 5:   // DEC B ecc
@@ -412,11 +456,10 @@ aggInc:
         
 aggDec:
       	_f.Zero=res3.b.l ? 0 : 1;
-        _f.Sign=(((signed char)res3.b.l) < 0) ? 1 : 0;
-        _f.AddSub=0;
+        _f.Sign=res3.b.l & 0x80 ? 1 : 0;
+        _f.AddSub=1;
       	_f.PV= res3.b.l == 0x7f ? 1 : 0; //P = 1    // DEC x         P = 1 if x=80H before, else 0
-      	_f.HalfCarry= res3.b.l & 0xf == 0xf ? 1 : 0; // DEC x      1 if borrow from bit 4 else 0 
-                      
+      	_f.HalfCarry= (res3.b.l & 0xf) == 0xf ? 1 : 0; // DEC x      1 if borrow from bit 4 else 0 
 				break;
 
 			case 6:   // LD B,n ecc
@@ -431,10 +474,7 @@ aggDec:
 				break;
 
 			case 7:   // RLCA
-				if(_a & 0x80)
-					_f.Carry=1;
-				else
-					_f.Carry=0;
+				_f.Carry=_a & 0x80 ? 1 : 0;
 				_a <<= 1;
 				_a |= _f.Carry;
         
@@ -443,9 +483,13 @@ aggRotate:
 				break;
                                          
 			case 8:   // EX AF,AF'
+        _f_af=_f.b;
+        
 			  res3.x=_af;
-				_af=regs2.r[0].x;
-				regs2.r[0].x=res3.x;
+				_af=regs2.r[3].x;
+				regs2.r[3].x=res3.x;
+
+        _f.b=_f_af;
 				break;
 
 			case 9:   // ADD HL,BC ecc
@@ -456,19 +500,8 @@ aggRotate:
 			  res3.d=(DWORD)res1.x+(DWORD)res2.x;
 			  _hl = res3.x;
         _f.AddSub=0;
-        
-aggFlagW:
-        _f.HalfCarry = (res1.x & 0xfff + res2.x & 0xfff) >= 0x1000;   // SOTTRAZIONE??
-        _f.PV = HIWORD(res3.d) ? 1 : 0;
-#warning flag per word o byte??
-//#warning inserire AddSub=1 se SBC e 0 se ADD!
-//        _f.AddSub=0;
-
-//aggFlagWZ:
-	      _f.Zero=res3.x ? 0 : 1;
-        _f.Sign=(((signed int)res3.x) < 0) ? 1 : 0;
- 				_f.Carry=!!HIWORD(res3.d);
-//#warning alcuni dicono sì i flag anche qua, altri no... DICIAM di sì, http://www.z80.info/z80code.
+        _f.HalfCarry = ((res1.x & 0xfff) + (res2.x & 0xfff)) >= 0x1000 ? 1 : 0;   // 
+        goto aggFlagWC;
         break;
 
 			case 0xa:   // LD A,(BC)
@@ -478,7 +511,6 @@ aggFlagW:
       case 0xb:   // DEC BC ecc
       case 0x1b:
       case 0x2b:
-//#define WORKING_REG16 regs1.r[((Pipe1 & 0x30) >> 4) +1].x
 				WORKING_REG16 --;
 				break;
 
@@ -487,8 +519,6 @@ aggFlagW:
 				_a >>= 1;
 				if(_f.Carry)
 					_a |= 0x80;
-				else
-					_a &= 0x7f;
         goto aggRotate;
 				break;
 
@@ -505,10 +535,7 @@ aggFlagW:
 
       case 0x17:    // RLA
 				_f1=_f;
-				if(_a & 0x80)
-					_f.Carry=1;
-				else
-					_f.Carry=0;
+				_f.Carry=_a & 0x80 ? 1 : 0;
 				_a <<= 1;
 				_a |= _f1.Carry;
         goto aggRotate;
@@ -529,8 +556,6 @@ aggFlagW:
 				_a >>= 1;
 				if(_f1.Carry)
 					_a |= 0x80;
-				else
-					_a &= 0x7f;
         goto aggRotate;
 				break;
 
@@ -563,6 +588,7 @@ aggFlagW:
           }
         else
           _f.Carry=0;
+        goto calcParity;
 				break;
 
       case 0x28:    // JR z
@@ -604,13 +630,13 @@ aggFlagW:
 			case 0x34:    // INC (HL)
         res3.b.l=GetValue(_hl)+1;
 			  PutValue(_hl,res3.b.l);
-        goto aggFlagB;
+        goto aggInc;
 				break;
 
 			case 0x35:    // DEC (HL)
         res3.b.l=GetValue(_hl)-1;
 			  PutValue(_hl,res3.b.l);
-        goto aggFlagB;
+        goto aggDec;
 				break;
 
 			case 0x36:    // LD (HL),n
@@ -635,7 +661,8 @@ aggFlagW:
 			  res3.d=(DWORD)res1.x+(DWORD)res2.x;
         _hl = res3.x;
         _f.AddSub=0;
-        goto aggFlagW;
+        _f.HalfCarry = ((res1.x & 0xfff) + (res2.x & 0xfff)) >= 0x1000 ? 1 : 0;   // 
+        goto aggFlagWC;
 				break;
 
 			case 0x3a:    // LD A,(nn)
@@ -648,9 +675,9 @@ aggFlagW:
 				break;
 
       case 0x3f:    // CCF
+        _f.HalfCarry=_f.Carry;
         _f.Carry=!_f.Carry;
-        _f.AddSub=!_f.AddSub;
-        _f.HalfCarry=0;
+        _f.AddSub=0;
         break;
                                    
 			case 0x40:    // LD r,r
@@ -722,7 +749,7 @@ aggFlagW:
 			case 0x74:
 			case 0x75:
 			case 0x77:
-				PutValue(_hl,/* regs1.b[((Pipe1 & 7) +1) & 7]*/ WORKING_REG2 );
+				PutValue(_hl,/* regs1.b[((Pipe1 & 7) +1) & 7]*/ WORKING_REG2);
 				break;
         
 			case 0x76:    // HALT
@@ -743,29 +770,44 @@ aggSomma:
         res1.b.h=res2.b.h=0;
         res3.x=res1.x+res2.x;
         _a=res3.b.l;
+        _f.AddSub=0;
+        _f.HalfCarry = ((res1.b.l & 0xf) + (res2.b.l & 0xf)) >= 0x10 ? 1 : 0;   // 
+
+aggFlagB:
+//        _f.PV = !!(((res1.b.l & 0x40) + (res2.b.l & 0x40)) & 0x40) != !!(((res1.b.l & 0x80) + (res2.b.l & 0x80)) & 0x80);
+        _f.PV = !!(((res1.b.l & 0x40) + (res2.b.l & 0x40)) & 0x80) != !!(((res1.x & 0x80) + (res2.x & 0x80)) & 0x100);
+  //(M^result)&(N^result)&0x80 is nonzero. That is, if the sign of both inputs is different from the sign of the result. (Anding with 0x80 extracts just the sign bit from the result.) 
+  //Another C++ formula is !((M^N) & 0x80) && ((M^result) & 0x80)
+//        _f.PV = !!((res1.b.l ^ res3.b.l) & (res2.b.l ^ res3.b.l) & 0x80);
+//        _f.PV = !!(!((res1.b.l ^ res2.b.l) & 0x80) && ((res1.b.l ^ res3.b.l) & 0x80));
+//**        _f.PV = ((res1.b.l ^ res3.b.l) & (res2.b.l ^ res3.b.l) & 0x80) ? 1 : 0;
+  // Calculate the overflow by sign comparison.
+/*  carryIns = ((a ^ b) ^ 0x80) & 0x80;
+  if (carryIns) // if addend signs are the same
+  {
+    // overflow if the sum sign differs from the sign of either of addends
+    carryIns = ((*acc ^ a) & 0x80) != 0;
+  }*/
+	// per overflow e halfcarry https://stackoverflow.com/questions/8034566/overflow-and-carry-flags-on-z80
+/*The overflow checks the most significant bit of the 8 bit result. This is the sign bit. If we add two negative numbers (MSBs=1) then the result should be negative (MSB=1), whereas if we add two positive numbers (MSBs=0) then the result should be positive (MSBs=0), so the MSB of the result must be consistent with the MSBs of the summands if the operation was successful, otherwise the overflow bit is set.*/        
+/*        if(!_f.Sign) {
+          _f.PV=(res1.b.l & 0x80 || res2.b.l & 0x80) ? 1 : 0;
+          }
+        else {
+          _f.PV=(res1.b.l & 0x80 && res2.b.l & 0x80) ? 1 : 0;
+          }*/
+/*        if(res1.b.l & 0x80 && res2.b.l & 0x80)
+          _f.PV=res3.b.l & 0x80 ? 0 : 1;
+        else if(!(res1.b.l & 0x80) && !(res2.b.l & 0x80))
+          _f.PV=res3.b.l & 0x80 ? 1 : 0;
+        else
+          _f.PV=0;*/
+        
+aggFlagBC:    // http://www.z80.info/z80sflag.htm
 				_f.Carry=!!res3.b.h;
         
-aggFlagB:
-        _f.HalfCarry = (res1.b.l & 0xf + res2.b.l & 0xf) >= 0x10;   // SOTTRAZIONE??
-        _f.PV = !!(res1.b.l & 0x40 + res2.b.l & 0x40) != !!(res1.b.l & 0x80 + res2.b.l & 0x80);
-
-aggFlagBZ:
         _f.Zero=res3.b.l ? 0 : 1;
-        _f.Sign=(((signed char)res3.b.l) < 0) ? 1 : 0;
-        _f.AddSub=0;
-        
-calcParity:
-          {
-          BYTE par;
-          par= res3.b.l >> 1;			// Microchip AN774
-          par ^= res3.b.l;
-          res3.b.l= par >> 2;
-          par ^= res3.b.l;
-          res3.b.l= par >> 4;
-          par ^= res3.b.l;
-          _f.PV=par & 1;
-          }
-	// per overflow e halfcarry https://stackoverflow.com/questions/8034566/overflow-and-carry-flags-on-z80
+        _f.Sign=res3.b.l & 0x80 ? 1 : 0;
 				break;
 
 			case 0x86:    // ADD A,(HL)
@@ -787,7 +829,16 @@ aggSommaC:
         res1.b.h=res2.b.h=0;
         res3.x=res1.x+res2.x+_f.Carry;
         _a=res3.b.l;
-				_f.Carry=!!res3.b.h;
+        _f.AddSub=0;
+        _f.HalfCarry = ((res1.b.l & 0xf) + (res2.b.l & 0xf)) >= 0x10 ? 1 : 0;   // 
+//#warning CONTARE IL CARRY NELL overflow?? no, pare di no (v. emulatore
+//        _f.PV = !!(((res1.b.l & 0x40) + (res2.b.l & 0x40)) & 0x80) != !!(((res1.x & 0x80) + (res2.x & 0x80)) & 0x100);
+/*        if(res1.b.l & 0x80 && res2.b.l & 0x80)
+          _f.PV=res3.b.l & 0x80 ? 0 : 1;
+        else if(!(res1.b.l & 0x80) && !(res2.b.l & 0x80))
+          _f.PV=res3.b.l & 0x80 ? 1 : 0;
+        else
+          _f.PV=0;*/
         goto aggFlagB;
 				break;
 
@@ -810,7 +861,19 @@ aggSottr:
         res1.b.h=res2.b.h=0;
         res3.x=res1.x-res2.x;
         _a=res3.b.l;
-				_f.Carry=!!res3.b.h;
+        _f.AddSub=1;
+        _f.HalfCarry = ((res1.b.l & 0xf) - (res2.b.l & 0xf)) & 0xf0 ? 1 : 0;   // 
+//        _f.PV = !!(((res1.b.l & 0x40) + (res2.b.l & 0x40)) & 0x80) != !!(((res1.x & 0x80) + (res2.x & 0x80)) & 0x100);
+//        _f.PV = ((res1.b.l ^ res3.b.l) & (res2.b.l ^ res3.b.l) & 0x80) ? 1 : 0;
+/*        if((res1.b.l & 0x80) != (res2.b.l & 0x80)) {
+          if(((res1.b.l & 0x80) && !(res3.b.l & 0x80)) || (!(res1.b.l & 0x80) && (res3.b.l & 0x80)))
+            _f.PV=1;
+          else
+            _f.PV=0;
+          }
+        else
+          _f.PV=0;*/
+        goto aggFlagB;
 				break;
 
 			case 0x96:    // SUB A,(HL)
@@ -832,7 +895,18 @@ aggSottrC:
         res1.b.h=res2.b.h=0;
         res3.x=res1.x-res2.x-_f.Carry;
         _a=res3.b.l;
-				_f.Carry=!!res3.b.h;
+        _f.AddSub=1;
+        _f.HalfCarry = ((res1.b.l & 0xf) - (res2.b.l & 0xf)) & 0xf0  ? 1 : 0;   // 
+//#warning CONTARE IL CARRY NELL overflow?? no, pare di no (v. emulatore
+//        _f.PV = !!(((res1.b.l & 0x40) + (res2.b.l & 0x40)) & 0x80) != !!(((res1.x & 0x80) + (res2.x & 0x80)) & 0x100);
+/*        if((res1.b.l & 0x80) != (res2.b.l & 0x80)) {
+          if(((res1.b.l & 0x80) && !(res3.b.l & 0x80)) || (!(res1.b.l & 0x80) && (res3.b.l & 0x80)))
+            _f.PV=1;
+          else
+            _f.PV=0;
+          }
+        else
+          _f.PV=0;*/
         goto aggFlagB;
 				break;
 
@@ -852,11 +926,26 @@ aggSottrC:
         _f.HalfCarry=1;
         
 aggAnd:
-        _f.Zero=_a ? 0 : 1;
-        _f.Sign=(((signed char)_a) < 0) ? 1 : 0;
-        _f.Carry=_f.AddSub=0;
         res3.b.l=_a;
-        goto calcParity;
+aggAnd2:
+        _f.Carry=0;
+aggAnd3:      // usato da IN 
+        _f.AddSub=0;
+        _f.Zero=_a ? 0 : 1;
+        _f.Sign=_a & 0x80 ? 1 : 0;
+        // halfcarry è 1 fisso se AND e 0 se OR/XOR
+        
+calcParity:
+          {
+          BYTE par;
+          par= res3.b.l >> 1;			// Microchip AN774
+          par ^= res3.b.l;
+          res3.b.l= par >> 2;
+          par ^= res3.b.l;
+          res3.b.l= par >> 4;
+          par ^= res3.b.l;
+          _f.PV=par & 1 ? 1 : 0;
+          }
 				break;
 
 			case 0xa6:    // AND A,(HL)
@@ -908,13 +997,13 @@ aggAnd:
 			case 0xbc:
 			case 0xbd:
 			case 0xbf:
-        res3.b.l=_a-WORKING_REG2;
-        goto aggFlagB;
+				res2.b.l=WORKING_REG2;
+				goto compare;
 				break;
 
 			case 0xbe:    // CP A,(HL)
-        res3.b.l=_a-GetValue(_hl);
-        goto aggFlagB;
+				res2.b.l=GetValue(_hl);
+  			goto compare;
 				break;
 
 			case 0xc0:    // RET NZ
@@ -925,10 +1014,13 @@ aggAnd:
 			case 0xc1:    // POP BC ecc
 			case 0xd1:    
 			case 0xe1:    
-			case 0xf1:    
 #define WORKING_REG16B regs1.r[(Pipe1 & 0x30) >> 4].b
 				WORKING_REG16B.l=GetValue(_sp++);
 				WORKING_REG16B.h=GetValue(_sp++);
+				break;
+			case 0xf1:    
+				_f.b=_f_af=GetValue(_sp++);
+				_a=GetValue(_sp++);
 				break;
 
 			case 0xc2:    // JP nz
@@ -953,10 +1045,13 @@ Jump:
 			case 0xc5:    // PUSH BC ecc
 			case 0xd5:    // 
 			case 0xe5:    // 
-			case 0xf5:    // 
-//#define WORKING_REG16 regs1.r[((Pipe1 & 0x30) >> 4) & 3].b
 				PutValue(--_sp,WORKING_REG16B.h);
 				PutValue(--_sp,WORKING_REG16B.l);
+				break;
+			case 0xf5:    // push af..
+        _f_af=_f.b;
+				PutValue(--_sp,_a);
+				PutValue(--_sp,_f_af);
 				break;
 
 			case 0xc6:    // ADD A,n
@@ -1009,35 +1104,20 @@ Return:
 					case 0x04:
 					case 0x05:
 					case 0x07:
-						if(WORKING_REG_CB & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry=WORKING_REG_CB & 0x80 ? 1 : 0;
 						WORKING_REG_CB <<= 1;
 						WORKING_REG_CB |= _f.Carry;
             res3.b.l=WORKING_REG_CB;
             
 aggRotate2:
             _f.HalfCarry=_f.AddSub=0;
-            {
-              BYTE par;
-              par= res3.b.l >> 1;			// Microchip AN774
-              par ^= res3.b.l;
-              res3.b.l= par >> 2;
-              par ^= res3.b.l;
-              res3.b.l= par >> 4;
-              par ^= res3.b.l;
-              _f.PV=par & 1;
-            }
             _f.Zero=res3.b.l ? 0 : 1;
-          	_f.Sign=(((signed char)res3.b.l) < 0) ? 1 : 0;
+          	_f.Sign=res3.b.l & 0x80 ? 1 : 0;
+            goto calcParity;
 						break;
 					case 0x06:   // RLC (HL)
 						res3.b.l=GetValue(_hl);
-						if(res3.b.l & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 						res3.b.l <<= 1;
 						res3.b.l |= _f.Carry;
 						PutValue(_hl,res3.b.l);
@@ -1055,8 +1135,6 @@ aggRotate2:
 						WORKING_REG_CB >>= 1;
 						if(_f.Carry)
 							WORKING_REG_CB |= 0x80;
-						else
-							WORKING_REG_CB &= 0x7f;
             res3.b.l=WORKING_REG_CB;
             goto aggRotate2;
 						break;
@@ -1066,8 +1144,6 @@ aggRotate2:
 						res3.b.l >>= 1;
 						if(_f.Carry)
 							res3.b.l |= 0x80;
-						else
-							res3.b.l &= 0x7f;
 						PutValue(_hl,res3.b.l);
             goto aggRotate2;
 						break;
@@ -1080,10 +1156,7 @@ aggRotate2:
 					case 0x15:
 					case 0x17:
 						_f1=_f;
-						if(WORKING_REG_CB & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry=WORKING_REG_CB & 0x80 ? 1 : 0;
 						WORKING_REG_CB <<= 1;
 						WORKING_REG_CB |= _f1.Carry;
             res3.b.l=WORKING_REG_CB;
@@ -1092,16 +1165,13 @@ aggRotate2:
 					case 0x16:   // RL (HL)
 						_f1=_f;
 						res3.b.l=GetValue(_hl);
-						if(res3.b.l & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 						res3.b.l <<= 1;
 						res3.b.l |= _f1.Carry;
 						PutValue(_hl,res3.b.l);
             goto aggRotate2;
 						break;
-
+            
 					case 0x18:   // RR r
 					case 0x19:
 					case 0x1a:
@@ -1114,8 +1184,6 @@ aggRotate2:
 						WORKING_REG_CB >>= 1;
 						if(_f1.Carry)
 							WORKING_REG_CB |= 0x80;
-						else
-							WORKING_REG_CB &= 0x7f;
             res3.b.l=WORKING_REG_CB;
             goto aggRotate2;
 						break;
@@ -1126,8 +1194,6 @@ aggRotate2:
 						res3.b.l >>= 1;
 						if(_f1.Carry)
 							res3.b.l |= 0x80;
-						else
-							res3.b.l &= 0x7f;
 						PutValue(_hl,res3.b.l);
             goto aggRotate2;
 						break;
@@ -1139,20 +1205,14 @@ aggRotate2:
 					case 0x24:
 					case 0x25:
 					case 0x27:
-						if(WORKING_REG_CB & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry= WORKING_REG_CB & 0x80 ? 1 : 0;
 						WORKING_REG_CB <<= 1;
             res3.b.l=WORKING_REG_CB;
             goto aggRotate2;
 						break;
 					case 0x26:   // SLA (HL)
 						res3.b.l=GetValue(_hl);
-						if(res3.b.l & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry= res3.b.l & 0x80 ? 1 : 0;
 						res3.b.l <<= 1;
 						PutValue(_hl,res3.b.l);
             goto aggRotate2;
@@ -1169,13 +1229,6 @@ aggRotate2:
 						WORKING_REG_CB >>= 1;
 						if(WORKING_REG_CB & 0x40)
 							WORKING_REG_CB |= 0x80;
-						else
-							WORKING_REG_CB &= 0x7f;
-						if(WORKING_REG_CB & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
-						WORKING_REG_CB <<= 1;
             res3.b.l=WORKING_REG_CB;
             goto aggRotate2;
 						break;
@@ -1185,12 +1238,6 @@ aggRotate2:
 						res3.b.l >>= 1;
 						if(res3.b.l & 0x40)
 							res3.b.l |= 0x80;
-						else
-							res3.b.l &= 0x7f;
-						if(res3.b.l & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
 						PutValue(_hl,res3.b.l);
             goto aggRotate2;
 						break;
@@ -1203,11 +1250,7 @@ aggRotate2:
 					case 0x34:
 					case 0x35:
 					case 0x37:
-						_f1=_f;
-						if(WORKING_REG_CB & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry= WORKING_REG_CB & 0x80 ? 1 : 0;
 						WORKING_REG_CB <<= 1;
 						WORKING_REG_CB |= 1;
             res3.b.l=WORKING_REG_CB;
@@ -1215,11 +1258,7 @@ aggRotate2:
 						break;
 					case 0x36:   // SLL (HL)
 						res3.b.l=GetValue(_hl);
-						_f1=_f;
-						if(res3.b.l & 0x80)
-							_f.Carry=1;
-						else
-							_f.Carry=0;
+						_f.Carry= res3.b.l & 0x80 ? 1 : 0;
 						res3.b.l <<= 1;
 						res3.b.l |= 1;
 						PutValue(_hl,res3.b.l);
@@ -1234,7 +1273,6 @@ aggRotate2:
 					case 0x3c:
 					case 0x3d:
 					case 0x3f:
-						_f1=_f;
 						_f.Carry=WORKING_REG_CB & 0x1;
 						WORKING_REG_CB >>= 1;
             res3.b.l=WORKING_REG_CB;
@@ -1242,14 +1280,13 @@ aggRotate2:
 						break;
 					case 0x3e:   // SRL (HL)
 						res3.b.l=GetValue(_hl);
-						_f1=_f;
 						_f.Carry=res3.b.l & 0x1;
 						res3.b.l >>= 1;
 						PutValue(_hl,res3.b.l);
             goto aggRotate2;
 						break;
 
-					case 0x40:   // BIT
+					case 0x40:   // BIT 
 					case 0x41:
 					case 0x42:
 					case 0x43:
@@ -1305,7 +1342,7 @@ aggRotate2:
 					case 0x7c:
 					case 0x7d:
 					case 0x7f:
-            res3.b.l=WORKING_REG_CB & (1 << ((Pipe2.b.l & 0x38) >> 3));
+            res3.b.l=WORKING_REG_CB & WORKING_BITPOS;
 aggBit:
             _f.Zero=res3.b.l ? 0 : 1;
             _f.HalfCarry=1;
@@ -1320,12 +1357,11 @@ aggBit:
 					case 0x6e:
 					case 0x76:
 					case 0x7e:
-						res3.b.l=GetValue(_hl) & (1 << ((Pipe2.b.l & 0x38) >> 3));
+						res3.b.l=GetValue(_hl) & WORKING_BITPOS;
 						goto aggBit;
 						break;
 
-
-					case 0x80:   // RES
+					case 0x80:   // RES 
 					case 0x81:
 					case 0x89:
 					case 0x91:
@@ -1381,7 +1417,7 @@ aggBit:
 					case 0xaf:
 					case 0xb7:
 					case 0xbf:
-						WORKING_REG_CB &= ~ (1 << ((Pipe2.b.l & 0x38) >> 3));
+						WORKING_REG_CB &= ~ WORKING_BITPOS;
 						break;
 
 					case 0x86:   // RES (HL)
@@ -1393,7 +1429,7 @@ aggBit:
 					case 0xb6:
 					case 0xbe:
 						res3.b.l=GetValue(_hl);
-            res3.b.l &= ~ (1 << ((Pipe2.b.l & 0x38) >> 3));
+            res3.b.l &= ~ WORKING_BITPOS;
 						PutValue(_hl,res3.b.l);
 						break;
 
@@ -1453,7 +1489,7 @@ aggBit:
 					case 0xef:
 					case 0xf7:
 					case 0xff:
-						WORKING_REG_CB |= (1 << ((Pipe2.b.l & 0x38) >> 3));
+						WORKING_REG_CB |= WORKING_BITPOS;
 						break;
 
 					case 0xc6:   // SET (HL)
@@ -1465,13 +1501,13 @@ aggBit:
 					case 0xf6:
 					case 0xfe:
 						res3.b.l=GetValue(_hl);
-						res3.b.l |= (1 << ((Pipe2.b.l & 0x38) >> 3));
+						res3.b.l |= WORKING_BITPOS;
 						PutValue(_hl,res3.b.l);
 						break;
 
 					default:
 //				wsprintf(myBuf,"Istruzione sconosciuta a %04x: %02x",_pc-1,GetValue(_pc-1));
-//				SetWindowText(hStatusWnd,myBuf);
+            Nop();
 						break;
 					}
 				break;
@@ -1509,7 +1545,7 @@ Call:
 				break;
 
 			case 0xd3:    // OUT
-				OutValue(Pipe2.b.l,_a);
+				OutValue(MAKEWORD(Pipe2.b.l,_a),_a);
 				_pc++;
 				break;
 
@@ -1534,10 +1570,10 @@ Call:
 			case 0xd9:    // EXX
         {
         BYTE n;
-        for(n=0; n<4; n++) {
-          i=regs2.r[n].x;
+        for(n=0; n<3; n++) {
+          res3.x=regs2.r[n].x;
           regs2.r[n].x=regs1.r[n].x;
-          regs1.r[n].x=i;
+          regs1.r[n].x=res3.x;
           }
         }
 				break;
@@ -1551,7 +1587,7 @@ Call:
 
 			case 0xdb:    // IN a,  NON tocca flag
 				_pc++;
-				_a=InValue(Pipe2.b.l);
+				_a=InValue(MAKEWORD(Pipe2.b.l,_a));
 				break;
 
 			case 0xdc:    // CALL c
@@ -1564,11 +1600,11 @@ Call:
 			case 0xdd:
 				switch(GetPipe(_pc++)) {
 					case 0xcb:   //
-#define IX_OFFSET _ix+Pipe2.b.l
+#define IX_OFFSET (_ix+((signed char)Pipe2.b.l))
 #define WORKING_REG_DD_CB regs1.b[Pipe2.b.h & 7]
 						switch(Pipe2.b.h) {		// il 4° byte!
 #ifdef Z80_EXTENDED
-							case 0x00:   // RLC IX
+							case 0x00:   // RLC (IX+
 							case 0x01:
 							case 0x02:
 							case 0x03:
@@ -1576,25 +1612,21 @@ Call:
 							case 0x05:
 							case 0x07:
 								WORKING_REG_DD_CB = GetValue(IX_OFFSET);
-								if(WORKING_REG_DD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+    						_f.Carry= WORKING_REG_DD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_DD_CB <<= 1;
 								WORKING_REG_DD_CB |= _f.Carry;
                 res3.b.l=WORKING_REG_DD_CB;
+    						_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x06:   // RLC
+							case 0x06:   // RLC (IX+
 								res3.b.l = GetValue(IX_OFFSET);
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+    						_f.Carry= res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								res3.b.l |= _f.Carry;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
@@ -1611,26 +1643,24 @@ Call:
 								WORKING_REG_DD_CB >>= 1;
 								if(_f.Carry)
 									WORKING_REG_DD_CB |= 0x80;
-								else
-									WORKING_REG_DD_CB &= 0x7f;
                 res3.b.l=WORKING_REG_DD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x0e:   // RRC
+							case 0x0e:   // RRC (IX+
 								res3.b.l = GetValue(IX_OFFSET);
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								if(_f.Carry)
 									res3.b.l |= 0x80;
-								else
-									res3.b.l &= 0x7f;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x10:   // RL
+							case 0x10:   // RL (IX+
 							case 0x11:
 							case 0x12:
 							case 0x13:
@@ -1639,31 +1669,27 @@ Call:
 							case 0x17:
 								_f1=_f;
 								WORKING_REG_DD_CB = GetValue(IX_OFFSET);
-								if(WORKING_REG_DD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+    						_f.Carry=WORKING_REG_DD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_DD_CB <<= 1;
 								WORKING_REG_DD_CB |= _f1.Carry;
                 res3.b.l=WORKING_REG_DD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x16:   // RL
+							case 0x16:   // RL (IX+
 								_f1=_f;
 								res3.b.l = GetValue(IX_OFFSET);
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+    						_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								res3.b.l |= _f1.Carry;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x18:   // RR
+							case 0x18:   // RR (IX+
 							case 0x19:
 							case 0x1a:
 							case 0x1b:
@@ -1676,22 +1702,20 @@ Call:
 								WORKING_REG_DD_CB >>= 1;
 								if(_f1.Carry)
 									WORKING_REG_DD_CB |= 0x80;
-								else
-									WORKING_REG_DD_CB &= 0x7f;
                 res3.b.l=WORKING_REG_DD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x1e:   // RR
+							case 0x1e:   // RR (IX+
 								_f1=_f;
 								res3.b.l = GetValue(IX_OFFSET);
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								if(_f1.Carry)
 									res3.b.l |= 0x80;
-								else
-									res3.b.l &= 0x7f;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
@@ -1704,28 +1728,24 @@ Call:
 							case 0x25:
 							case 0x27:
 								WORKING_REG_DD_CB = GetValue(IX_OFFSET);
-								if(WORKING_REG_DD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=WORKING_REG_DD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_DD_CB <<= 1;
                 res3.b.l=WORKING_REG_DD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x26:   // SLA
+							case 0x26:   // SLA (IX+
 								res3.b.l = GetValue(IX_OFFSET);
-								if(res3.b.l & 0x80)
-									_f.Carry=res3.b.l;
-								else
-									_f.Carry=0;
+								_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x28:   // SRA
+							case 0x28:   // SRA (IX+
 							case 0x29:
 							case 0x2a:
 							case 0x2b:
@@ -1737,88 +1757,71 @@ Call:
 								WORKING_REG_DD_CB >>= 1;
 								if(WORKING_REG_DD_CB & 0x40)
 									WORKING_REG_DD_CB |= 0x80;
-								else
-									WORKING_REG_DD_CB &= 0x7f;
-								if(WORKING_REG_DD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
-								WORKING_REG_DD_CB <<= 1;
                 res3.b.l=WORKING_REG_DD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x2e:   // SRA
+							case 0x2e:   // SRA (IX+
 								res3.b.l = GetValue(IX_OFFSET);
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								if(res3.b.l & 0x40)
 									res3.b.l |= 0x80;
-								else
-									res3.b.l &= 0x7f;
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x30:   // SLL
+							case 0x30:   // SLL (IX+
 							case 0x31:
 							case 0x32:
 							case 0x33:
 							case 0x34:
 							case 0x35:
 							case 0x37:
-								_f1=_f;
 								WORKING_REG_DD_CB = GetValue(IX_OFFSET);
-								if(WORKING_REG_DD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=WORKING_REG_DD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_DD_CB <<= 1;
 								WORKING_REG_DD_CB |= 1;
                 res3.b.l=WORKING_REG_DD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 							case 0x36:   // SLL
 								res3.b.l = GetValue(IX_OFFSET);
-								_f1=_f;
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								res3.b.l |= 1;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
 
 #ifdef Z80_EXTENDED
-							case 0x38:   // SRL
+							case 0x38:   // SRL (IX+
 							case 0x39:
 							case 0x3a:
 							case 0x3b:
 							case 0x3c:
 							case 0x3d:
 							case 0x3f:
-								_f1=_f;
 								WORKING_REG_DD_CB = GetValue(IX_OFFSET);
 								_f.Carry=WORKING_REG_DD_CB & 0x1;
 								WORKING_REG_DD_CB >>= 1;
                 res3.b.l=WORKING_REG_DD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x3e:   // SRL
+							case 0x3e:   // SRL (IX+
 								res3.b.l = GetValue(IX_OFFSET);
-								_f1=_f;
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								PutValue(IX_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
@@ -1879,12 +1882,13 @@ Call:
 							case 0x7c:
 							case 0x7d:
 							case 0x7f:
-								res3.b.l=GetValue(IX_OFFSET) & (1 << ((Pipe2.b.h & 0x38) >> 3));
+								res3.b.l=GetValue(IX_OFFSET) & WORKING_BITPOS2;
+        				_pc+=2;
                 goto aggBit;
 								break;
 #endif
 
-							case 0x46:   // BIT IX
+							case 0x46:   // BIT (IX+
 							case 0x4e:
 							case 0x56:
 							case 0x5e:
@@ -1892,13 +1896,14 @@ Call:
 							case 0x6e:
 							case 0x76:
 							case 0x7e:
-								res3.b.l=GetValue(IX_OFFSET) & (1 << ((Pipe2.b.h & 0x38) >> 3));
+								res3.b.l=GetValue(IX_OFFSET) & WORKING_BITPOS2;
+        				_pc+=2;
                 goto aggBit;
 								break;
 
 
 #ifdef Z80_EXTENDED
-							case 0x80:   // RES IX
+							case 0x80:   // RES (IX+
 							case 0x81:
 							case 0x89:
 							case 0x91:
@@ -1953,14 +1958,14 @@ Call:
 							case 0xa7:
 							case 0xaf:
 							case 0xb7:
-							case 0xbf:		// questi non è chiaro cosa dovrebbero fare con la destinazione...
+							case 0xbf:
 								res3.b.l=GetValue(IX_OFFSET);
-								res3.b.l &= ~ (1 << ((Pipe2.b.l & 0x38) >> 3));
-								PutValue(IX_OFFSET,res3.b.l);
+								res3.b.l &= ~ WORKING_BITPOS2;
+								WORKING_REG_DD_CB = res3.b.l;
 								break;
 #endif
 
-							case 0x86:   // RES IX
+							case 0x86:   // RES (IX+
 							case 0x8e:
 							case 0x96:
 							case 0x9e:
@@ -1969,12 +1974,12 @@ Call:
 							case 0xb6:
 							case 0xbe:
 								res3.b.l=GetValue(IX_OFFSET);
-								res3.b.l &= ~ (1 << ((Pipe2.b.l & 0x38) >> 3));
+								res3.b.l &= ~ WORKING_BITPOS2;
 								PutValue(IX_OFFSET,res3.b.l);
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0xc0:   // SET IX
+							case 0xc0:   // SET (IX+
 							case 0xc8:
 							case 0xd0:
 							case 0xd8:
@@ -2029,14 +2034,14 @@ Call:
 							case 0xe7:
 							case 0xef:
 							case 0xf7:
-							case 0xff:						// questi non è chiaro cosa dovrebbero fare con la destinazione...
+							case 0xff:
 								res3.b.l=GetValue(IX_OFFSET);
-								res3.b.l |= (1 << ((Pipe2.b.l & 0x38) >> 3));
-								PutValue(IX_OFFSET,res3.b.l);
+								res3.b.l |= WORKING_BITPOS2;
+								WORKING_REG_DD_CB = res3.b.l;
 								break;
 #endif
 
-							case 0xc6:   // SET IX
+							case 0xc6:   // SET (IX+
 							case 0xce:
 							case 0xd6:
 							case 0xde:
@@ -2045,13 +2050,13 @@ Call:
 							case 0xf6:
 							case 0xfe:
 								res3.b.l=GetValue(IX_OFFSET);
-								res3.b.l |= (1 << ((Pipe2.b.l & 0x38) >> 3));
+								res3.b.l |= WORKING_BITPOS2;
 								PutValue(IX_OFFSET,res3.b.l);
 								break;
 
 							default:
 		//				wsprintf(myBuf,"Istruzione sconosciuta a %04x: %02x",_pc-1,GetValue(_pc-1));
-		//				SetWindowText(hStatusWnd,myBuf);
+                Nop();
 								break;
 							}
 						_pc+=2;
@@ -2060,20 +2065,21 @@ Call:
 //#define WORKING_REG regs1.b[((Pipe1 & 0x38) >> 3) & 3]
 					case 0x09:   // ADD IX,BC
 					case 0x19:   // ADD IX,DE
-//#define WORKING_REG16 regs1.r[((Pipe1 & 0x30) >> 4) +1].x
-            res1.x=_ix;
             res2.x=WORKING_REG16;
+            
+aggSommaIX:
+            res1.x=_ix;
     			  res3.d=(DWORD)res1.x+(DWORD)res2.x;
     			  _ix = res3.x;
-            _f.AddSub=0;
-            goto aggFlagW;
+            _f.HalfCarry = ((res1.x & 0xfff) + (res2.x & 0xfff)) >= 0x1000 ? 1 : 0;   // 
+            goto aggFlagWC;
 						break;
 					case 0x21:    // LD IX,nn
 						_ix = Pipe2.x;
 						_pc+=2;
 						break;
 					case 0x22:    // LD (nn),IX
-						PutValue(Pipe2.x,_ix);
+						PutIntValue(Pipe2.x,_ix);
             _pc+=2;
 						break;
 					case 0x23:   // INC IX
@@ -2096,14 +2102,11 @@ Call:
 						break;
 #endif
 					case 0x29:    // ADD IX,IX
-            res1.x=res2.x=_ix;
-    			  res3.d=(DWORD)res1.x+(DWORD)res2.x;
-    			  _ix = res3.x;
-            _f.AddSub=0;
-            goto aggFlagW;
+            res2.x=_ix;
+            goto aggSommaIX;
 						break;
 					case 0x2a:    // LD IX,(nn)
-						_ix = GetValue(Pipe2.x);
+						_ix = GetIntValue(Pipe2.x);
 						_pc+=2;
 						break;
 					case 0x2b:    // DEC IX
@@ -2140,16 +2143,12 @@ Call:
             goto aggDec;
 						break;
 					case 0x36:    // LD (IX+n),n
-						PutValue(IX_OFFSET,Pipe2.b.h);		// VERIFICARE !! ****
+						PutValue(IX_OFFSET,Pipe2.b.h);
 						_pc+=2;
 						break;
 					case 0x39:    // ADD IX,SP
-            res1.x=_ix;
             res2.x=_sp;
-    			  res3.d=(DWORD)res1.x+(DWORD)res2.x;
-    			  _ix = res3.x;
-            _f.AddSub=0;
-            goto aggFlagW;
+            goto aggSommaIX;
 						break;
 #ifdef Z80_EXTENDED
 					case 0x44:    // LD r,IXh
@@ -2192,8 +2191,7 @@ Call:
 					case 0x65:
 						_ixh=_ixl;
 						break;
-#endif
-#ifdef Z80_EXTENDED
+
 					case 0x68:    // LD IXl,r
 					case 0x69:
 					case 0x6a:
@@ -2250,6 +2248,7 @@ Call:
 						_pc++;
             goto aggSommaC;
 						break;
+
 #ifdef Z80_EXTENDED
 					case 0x94:    // SUB IXh
 						res2.b.l=_ixh;
@@ -2260,7 +2259,7 @@ Call:
             goto aggSottr;
 						break;
 #endif
-					case 0x96:    // SUB (IX+n)
+					case 0x96:    // SUB A,(IX+n)
 						res2.b.l=GetValue(IX_OFFSET);
 						_pc++;
             goto aggSottr;
@@ -2280,6 +2279,7 @@ Call:
 						_pc++;
             goto aggSottrC;
 						break;
+
 #ifdef Z80_EXTENDED
 					case 0xa4:    // AND A,IXh
 						_a &= _ixh;
@@ -2294,8 +2294,8 @@ Call:
 #endif
 					case 0xa6:    // AND A,(IX+n)
 						_a &= GetValue(IX_OFFSET);
-						_pc++;
             _f.HalfCarry=1;
+						_pc++;
             goto aggAnd;
 						break;
 #ifdef Z80_EXTENDED
@@ -2312,10 +2312,11 @@ Call:
 #endif
 					case 0xae:    // XOR A,(IX+n)
 						_a ^= GetValue(IX_OFFSET);
-						_pc++;
             _f.HalfCarry=0;
+						_pc++;
             goto aggAnd;
 						break;
+
 #ifdef Z80_EXTENDED
 					case 0xb4:    // OR A,IXh
 						_a |= _ixh;
@@ -2330,24 +2331,25 @@ Call:
 #endif
 					case 0xb6:    // OR A,(IX+n)
 						_a |= GetValue(IX_OFFSET);
-						_pc++;
             _f.HalfCarry=0;
+						_pc++;
             goto aggAnd;
 						break;
+
 #ifdef Z80_EXTENDED
 					case 0xbc:    // CP IXh
-            res3.b.l=_a - _ixh;
-            goto aggFlagB;
+						res2.b.l=_ixh;
+						goto compare;
 						break;
 					case 0xbd:    // CP IXl
-            res3.b.l=_a - _ixl;
-            goto aggFlagB;
+						res2.b.l=_ixl;
+						goto compare;
 						break;
 #endif
 					case 0xbe:    // CP (IX+n)
-            res3.b.l=_a - GetValue(IX_OFFSET);
+						res2.b.l=GetValue(IX_OFFSET);
 						_pc++;
-            goto aggFlagB;
+						goto compare;
 						break;
 
 					case 0xe1:    // POP IX
@@ -2372,7 +2374,7 @@ Call:
 
 					default:
 //				wsprintf(myBuf,"Istruzione sconosciuta a %04x: %02x",_pc-1,GetValue(_pc-1));
-//				SetWindowText(hStatusWnd,myBuf);
+            Nop();
 						break;
 					}
 				break;
@@ -2410,8 +2412,8 @@ Call:
 
 			case 0xe6:    // AND A,n
 				_a &= Pipe2.b.l;
-				_pc++;
         _f.HalfCarry=1;
+				_pc++;
         goto aggAnd;
 				break;
 
@@ -2444,8 +2446,55 @@ Call:
 			    _pc+=2;
 				break;
 
-			case 0xed:
+			case 0xed:      // ED instructions
 				switch(GetPipe(_pc++)) {
+#ifdef Z80_EXTENDED
+					case 0x00:    // IN0
+					case 0x08:
+					case 0x10:
+					case 0x18:
+					case 0x20:
+					case 0x28:
+					case 0x38:
+						_c=InValue(Pipe2.b.l);    // 
+            _pc++;
+						break;
+					case 0x01:    // OUT0
+					case 0x09:
+					case 0x11:
+					case 0x19:
+					case 0x21:
+					case 0x29:
+					case 0x39:
+						OutValue(Pipe2.b.l,_c);   // 
+            _pc++;
+						break;
+#endif
+#ifdef Z80_EXTENDED
+					case 0x04:    // TST
+					case 0x0C:
+					case 0x14:
+					case 0x1C:
+					case 0x24:
+					case 0x2C:
+					case 0x3C:
+            res3.b.l=_a & WORKING_REG;
+            goto aggBit;
+						break;
+					case 0x34:
+            res3.b.l=_a & GetValue(_hl);
+            goto aggBit;
+						break;
+					case 0x64:
+            res3.b.l=_a & Pipe2.b.l;
+            _pc++;
+            goto aggBit;
+						break;
+					case 0x74:// boh?!
+            _pc++;
+						break;
+#endif
+
 					case 0x40:    // IN r,(C)
 					case 0x48:
 					case 0x50:
@@ -2453,14 +2502,15 @@ Call:
 					case 0x60:
 					case 0x68:
 					case 0x78:
-						WORKING_REG=InValue(_c);
+						WORKING_REG=InValue(_bc);    // 
             res3.b.l=WORKING_REG;
-            goto aggFlagB;
+            //_f.HalfCarry= ???
+            goto aggAnd3;
 						break;
 #ifdef Z80_EXTENDED
 					case 0x70:    // IN (C)
-            res3.b.l=InValue(_c);
-            goto aggFlagB;
+            res3.b.l=InValue(_bc);    // verificare...
+            goto aggAnd3;// verificare flag qua!
 						break;
 #endif
 
@@ -2471,119 +2521,167 @@ Call:
 					case 0x61:
 					case 0x69:
 					case 0x79:
-						OutValue(_c,WORKING_REG);
+						OutValue(_bc,WORKING_REG);   // 
 						break;
 #ifdef Z80_EXTENDED
 					case 0x71:    // OUT (C),0
-						OutValue(_c,0);
+						OutValue(_bc,0);      // verificare...
 						break;
 #endif
 
 					case 0x42:    // SBC HL,BC ecc
 					case 0x52:
 					case 0x62:
-//#define WORKING_REG16 regs1.r[((Pipe1 & 0x30) >> 4) +1].x
             res1.x=_hl;
             res2.x=WORKING_REG16;
-            res3.d=(DWORD)res1.x-_f.Carry-(DWORD)res2.x;
+            res3.d=(DWORD)res1.x-(DWORD)res2.x-_f.Carry;
     			  _hl = res3.x;
+            
+aggSottr16:
+            _f.HalfCarry = ((res1.x & 0xfff) - (res2.x & 0xfff)) & 0xf000 ? 1 : 0;   // 
             _f.AddSub=1;
-            goto aggFlagW;
+//        _f.PV = !!(((res1.b.h & 0x40) + (res2.b.h & 0x40)) & 0x80) != !!(((res1.d & 0x8000) + (res2.d & 0x8000)) & 0x10000);
+/*            if((res1.b.h & 0x80) != (res2.b.h & 0x80)) {
+              if(((res1.b.h & 0x80) && !(res3.b.h & 0x80)) || (!(res1.b.h & 0x80) && (res3.b.h & 0x80)))
+                _f.PV=1;
+              else
+                _f.PV=0;
+              }
+            else
+              _f.PV=0;*/
+            
+aggFlagW:
+//            _f.PV = !!(((res1.b.h & 0x40) + (res2.b.h & 0x40)) & 0x40) != !!(((res1.b.h & 0x80) + (res2.b.h & 0x80)) & 0x80);
+    //        _f.PV = !!((res1.b.h ^ res3.b.h) & (res2.b.h ^ res3.b.h) & 0x80);
+//            _f.PV = !!(!((res1.b.h ^ res2.b.h) & 0x80) && ((res1.b.h ^ res3.b.h) & 0x80));
+//**            _f.PV = ((res1.b.h ^ res3.b.h) & (res2.b.h ^ res3.b.h) & 0x80) ? 1 : 0;
+    //#warning flag per word o byte?? boh?!
+            _f.PV = !!(((res1.b.h & 0x40) + (res2.b.h & 0x40)) & 0x80) != !!(((res1.d & 0x8000) + (res2.d & 0x8000)) & 0x10000);
+
+            _f.Zero=res3.x ? 0 : 1;
+            _f.Sign=res3.b.h & 0x80 ? 1 : 0;
+
+aggFlagWC:
+     				_f.Carry=!!HIWORD(res3.d);
+//i flag tutti solo per ADC/SBC se no solo carry/halfcarry
 						break;
 					case 0x4a:    // ADC HL,BC ecc
 					case 0x5a:
 					case 0x6a:
             res1.x=_hl;
             res2.x=WORKING_REG16;
-            res3.d=(DWORD)res1.x+_f.Carry+(DWORD)res2.x;
+            res3.d=(DWORD)res1.x+(DWORD)res2.x+_f.Carry;
             _hl = res3.x;
+            
+aggSomma16:            
+            _f.HalfCarry = ((res1.x & 0xfff) + (res2.x & 0xfff)) >= 0x1000 ? 1 : 0;   // 
+//        _f.PV = !!(((res1.b.h & 0x40) + (res2.b.h & 0x40)) & 0x80) != !!(((res1.d & 0x8000) + (res2.d & 0x8000)) & 0x10000);
+/*            if(res1.b.h & 0x80 && res2.b.h & 0x80)
+              _f.PV=res3.b.h & 0x80 ? 0 : 1;
+            else if(!(res1.b.h & 0x80) && !(res2.b.h & 0x80))
+              _f.PV=res3.b.h & 0x80 ? 1 : 0;
+            else
+              _f.PV=0;*/
             _f.AddSub=0;
 						goto aggFlagW;
 						break;
 					case 0x72:      // SBC HL,SP
             res1.x=_hl;
             res2.x=_sp;
-            res3.d=(DWORD)res1.x-_f.Carry-(DWORD)res2.x;
+            res3.d=(DWORD)res1.x-(DWORD)res2.x-_f.Carry;
     			  _hl = res3.x;
-            _f.AddSub=1;
-						goto aggFlagW;
+						goto aggSottr16;
 						break;
 					case 0x7a:      // ADC HL,SP
             res1.x=_hl;
             res2.x=_sp;
-            res3.d=(DWORD)res1.x+_f.Carry+(DWORD)res2.x;
+            res3.d=(DWORD)res1.x+(DWORD)res2.x+_f.Carry;
             _hl = res3.x;
-            _f.AddSub=0;
-						goto aggFlagW;
+						goto aggSomma16;
 						break;
 
 					case 0x43:    // LD (nn),BC ecc
-//#ifdef Z80_EXTENDED					// sembravano solo extended, ma in effetti c'è sempre...
 					case 0x53:
-					case 0x63:			
-//#endif
-						PutIntValue(Pipe2.x,WORKING_REG16);		// 
-						_pc+=2;
-						break;
-					case 0x6b:    // LD HL,(nn)
-						_hl=GetIntValue(Pipe2.x);		// 
+					case 0x63:	  // per HL è undocumented...
+						PutIntValue(Pipe2.x,WORKING_REG16);
 						_pc+=2;
 						break;
 					case 0x73:    // LD (nn),SP
 						PutIntValue(Pipe2.x,_sp);		// 
 						_pc+=2;
 						break;
+            
+					case 0x4b:    // LD BC,(nn) ecc
+					case 0x5b:
+					case 0x6b:		// per HL è undocumented...
+						WORKING_REG16=GetIntValue(Pipe2.x);
+						_pc+=2;
+						break;
+					case 0x7b:    // LD SP,(nn)
+						_sp=GetIntValue(Pipe2.x);		// 
+						_pc+=2;
+						break;
 
 					case 0x44:    // NEG
-#ifdef Z80_EXTENDED
-					case 0x54:
-					case 0x64:
-					case 0x74:
-					case 0x4c:
-					case 0x5c:
-					case 0x6c:
-					case 0x7c:
-#endif
-						_a = 0-_a;
-            res3.b.l=_a;
-#warning            P = 1 if A = 80H before, else 0
-            goto aggFlagB;
+						res1.b.l=0;
+						res2.b.l=_a;
+						res1.b.h=res2.b.h=0;
+						res3.x=res1.x-res2.x;
+						_f.Carry= _a ? 1 : 0;
+		        _f.PV = _a == 0x80 ? 1 : 0;
+//#warning            P = 1 if A = 80H before, else 0 E/MA altrove dice overflow...
+						_a = res3.b.l;
+            _f.AddSub=1;
+            _f.HalfCarry = ((res1.b.l & 0xf) - (res2.b.l & 0xf)) & 0xf0 ? 1 : 0;   // 
+		        _f.Zero=res3.b.l ? 0 : 1;
+				    _f.Sign=res3.b.l & 0x80 ? 1 : 0;
 						break;
 
 					case 0x45:    // RETN
-					case 0x55:
+/*					case 0x55:
 					case 0x65:
 					case 0x75:
 					case 0x5d:
 					case 0x6d:
-					case 0x7d:
-						_fIRQ=_f1;			//VERIFICARE!
-						_f.b=GetValue(_sp++);
+					case 0x7d:*/
+//						_fIRQ=_f1;			//VERIFICARE! bah fondamentalmente non mi sembra serva...
 						_pc=GetValue(_sp++);
 						_pc |= ((SWORD)GetValue(_sp++)) << 8;
 						IRQ_Enable1=IRQ_Enable2;
 						break;
 					case 0x4d:			// RETI
-						_f.b=GetValue(_sp++);
 						_pc=GetValue(_sp++);
 						_pc |= ((SWORD)GetValue(_sp++)) << 8;
 						break;
 
 					case 0x46:    // IM
 					case 0x56:
-					case 0x66:
-					case 0x76:
+//					case 0x66:
+//					case 0x76:
 						IRQ_Mode=Pipe2.b.l & 0x10 ? 1: 0;
-						_pc++;
 						break;
 #ifdef Z80_EXTENDED
-					case 0x4e:
-					case 0x6e:
+					case 0x4c:    // MLT
+            res3.x=regs1.r[0].b.l*regs1.r[0].b.h;
+            _bc=res3.x;
+						break;    // no flags
+					case 0x5c:
+            res3.x=regs1.r[1].b.l*regs1.r[1].b.h;
+            _de=res3.x;
+						break;
+					case 0x6c:
+            res3.x=regs1.r[2].b.l*regs1.r[2].b.h;
+            _hl=res3.x;
+						break;
+					case 0x7c:
+            res3.x=LOBYTE(_sp)*HIBYTE(_sp);
+            _sp=res3.x;
+						break;
 #endif
-					case 0x5e:
-					case 0x7e:
-						IRQ_Mode=Pipe2.b.l & 0x10 ? 2: -1 /*boh! ma cmq solo se extended */;
-						_pc++;
+					case 0x5e:    // IM 2
+						IRQ_Mode=2;
+//					case 0x7e:
+//						IRQ_Mode=Pipe2.b.l & 0x10 ? 2: -1 /*boh! ma cmq solo se extended ??? */;
 						break;
 
 					case 0x47:    // LD i
@@ -2603,42 +2701,65 @@ Call:
 						break;
 
 					case 0x67:    // RRD
-						res3.x=_hl;
-						_hl = (_hl & 0xfff0) | (_a & 0xf);			// *****VERIFICARE
-						_a=res3.x & 0xf;
+						res3.b.l=GetValue(_hl);     // verificare...
+						PutValue(_hl,(res3.b.l & 0xf) | ((_a & 0xf) << 4));
+						_a = (_a & 0xf0) | (res3.b.l & 0xf);
             res3.b.l=_a;
-            goto aggFlagB;
+            goto aggRotate2;
 						break;
 					case 0x6f:    // RLD
-						res3.x=_hl;
-						_hl = (_hl & 0x0fff) | (((SWORD)_a & 0xf) << 12);			// *****VERIFICARE
-						_a=(res3.x & 0xf000) >> 12;
+						res3.b.l=GetValue(_hl);
+						PutValue(_hl,((res3.b.l & 0xf) << 4) | (_a & 0xf));
+						_a = (_a & 0xf0) | ((res3.b.l & 0xf0) >> 4);
             res3.b.l=_a;
-            goto aggFlagB;
+            goto aggRotate2;
 						break;
 
+#ifdef Z80_EXTENDED
+					case 0x76:      // SLP
+						break;
+#endif
+            
+#ifdef Z80_EXTENDED
+					case 0x83:      // OTIM
+						break;
+					case 0x8B:      // OTDM
+						break;
+					case 0x93:      // OTIMR
+						break;
+					case 0x9B:      // OTDMR
+						break;
+#endif
+            
 					case 0xa0:    // LDI
 						PutValue(_de++,GetValue(_hl++));
 aggLDI:
 						_bc--;
-            _f.AddSub=0;
-						_f.HalfCarry=0;
-						_f.Sign=0;
-						_f.PV=!_bc;
+            _f.AddSub=_f.HalfCarry=0;
+						_f.PV=!!_bc;
 						break;
 					case 0xa1:    // CPI
 						_bc--;
-            res3.b.l=_a-GetValue(_hl++);
-            goto aggFlagB;
+						res1.b.l=_a;
+						res2.b.l=GetValue(_hl++);
+            
+aggCPI:
+						res1.b.h=res2.b.h=0;
+						res3.x=res1.x-res2.x;
+            _f.AddSub=1;
+            _f.HalfCarry = ((res1.b.l & 0xf) - (res2.b.l & 0xf)) & 0xf0 ? 1 : 0;   // 
+            _f.Zero=res3.b.l ? 0 : 1;
+            _f.Sign=res3.b.l & 0x80 ? 1 : 0;
+						_f.PV=!!_bc;
 						break;
 					case 0xa2:    // INI
-						PutValue(_hl++,InValue(_c));
+						PutValue(_hl++,InValue(_bc));
 						_b--;
 						_f.Zero=!_b;
-            _f.AddSub=0;
+            _f.AddSub=1;
 						break;
 					case 0xa3:    // OUTI
-						OutValue(_c,GetValue(_hl++));
+						OutValue(_bc,GetValue(_hl++));
 						_b--;
 						_f.Zero=!_b;
             _f.AddSub=0;
@@ -2649,26 +2770,28 @@ aggLDI:
 						_bc--;
 						if(_bc)
 							_pc-=2;			// così ripeto e consento IRQ...
+            _f.AddSub=_f.HalfCarry=0;
             _f.PV=0;
 						break;
 					case 0xb1:    // CPIR
-						if(_a != GetValue(_hl)) {
-              _bc--;
-              _hl++;
+						res1.b.l=_a;
+						res2.b.l=GetValue(_hl++);
+            _bc--;
+						if(res1.b.l != res2.b.l) {
               if(_bc) 
                 _pc-=2;			// così ripeto e consento IRQ...
               }
-            res3.b.l=_a-GetValue(_hl);
-            goto aggFlagB;
+            goto aggCPI;    // 
 						break;
 					case 0xb2:    // INIR
-						PutValue(_hl++,InValue(_c));
+						PutValue(_hl++,InValue(_bc));
 						_b--;
 						if(_b)
 							_pc-=2;			// così ripeto e consento IRQ...
+						_f.Zero=_f.AddSub=1;  // in teoria solo alla fine... ma ok
 						break;
 					case 0xb3:    // OTIR
-						OutValue(_c,GetValue(_hl++));
+						OutValue(_bc,GetValue(_hl++));
 						_b--;
 						if(_b)
 							_pc-=2;			// così ripeto e consento IRQ...
@@ -2676,22 +2799,22 @@ aggLDI:
 
 					case 0xa8:    // LDD
 						PutValue(_de--,GetValue(_hl--));
-						_bc--;
 						goto aggLDI;
 						break;
 					case 0xa9:    // CPD
 						_bc--;
-            res3.b.l=_a-GetValue(_hl--);
-            goto aggFlagB;
+						res1.b.l=_a;
+						res2.b.l=GetValue(_hl--);
+            goto aggCPI;    // 
 						break;
 					case 0xaa:    // IND
-						PutValue(_hl--,InValue(_c));
+						PutValue(_hl--,InValue(_bc));
 						_b--;
 						_f.Zero=!_b;
             _f.AddSub=1;
 						break;
 					case 0xab:    // OUTD
-						OutValue(_c,GetValue(_hl--));
+						OutValue(_bc,GetValue(_hl--));
 						_b--;
 						_f.Zero=!_b;
             _f.AddSub=1;
@@ -2705,23 +2828,25 @@ aggLDI:
             _f.PV=0;
 						break;
 					case 0xb9:    // CPDR
-						if(_a != GetValue(_hl)) {
-              _bc--;
-              _hl--;
+						res1.b.l=_a;
+						res2.b.l=GetValue(_hl--);
+            _bc--;
+						if(res1.b.l != res2.b.l) {
               if(_bc) 
                 _pc-=2;			// così ripeto e consento IRQ...
               }
+            goto aggCPI;    // 
 						break;
 					case 0xba:    // INDR
-						PutValue(_hl--,InValue(_c));
+						PutValue(_hl--,InValue(_bc));
 						_b--;
 						if(_b)
 							_pc-=2;			// così ripeto e consento IRQ...
-						_f.Zero=!_b;  // in teoria solo alla fine... ma ok
+						_f.Zero=1;  // in teoria solo alla fine... ma ok
             _f.AddSub=1;
 						break;
 					case 0xbb:    // OTDR
-						OutValue(_c,GetValue(_hl--));
+						OutValue(_bc,GetValue(_hl--));
 						_b--;
 						if(_b)
 							_pc-=2;			// così ripeto e consento IRQ...
@@ -2731,15 +2856,15 @@ aggLDI:
 
 					default:
 //				wsprintf(myBuf,"Istruzione sconosciuta a %04x: %02x",_pc-1,GetValue(_pc-1));
-//				SetWindowText(hStatusWnd,myBuf);
+            Nop();
 						break;
 					}
 				break;
 
-			case 0xee:    // XOR A
+			case 0xee:    // XOR A,n
 				_a ^= Pipe2.b.l;
-				_pc++;
         _f.HalfCarry=0;
+				_pc++;
         goto aggAnd;
 				break;
 
@@ -2766,10 +2891,10 @@ aggLDI:
 			    _pc+=2;
 				break;
 
-			case 0xf6:    // OR A
+			case 0xf6:    // OR A,n
 				_a |= Pipe2.b.l;
-				_pc++;
         _f.HalfCarry=0;
+				_pc++;
         goto aggAnd;
 				break;
 
@@ -2803,11 +2928,11 @@ aggLDI:
 			case 0xfd:
 				switch(GetPipe(_pc++)) {
 					case 0xcb:
-#define IY_OFFSET _iy+Pipe2.b.l
+#define IY_OFFSET (_iy+((signed char)Pipe2.b.l))
 #define WORKING_REG_FD_CB regs1.b[Pipe2.b.h & 7]
 						switch(Pipe2.b.h) {			// il 4° byte!
 #ifdef Z80_EXTENDED
-							case 0x00:    // RLC IY
+							case 0x00:    // RLC (IY+
 							case 0x01:
 							case 0x02:
 							case 0x03:
@@ -2815,30 +2940,26 @@ aggLDI:
 							case 0x05:
 							case 0x07:
 								WORKING_REG_FD_CB = GetValue(IY_OFFSET);
-								if(WORKING_REG_FD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=WORKING_REG_FD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_FD_CB <<= 1;
 								WORKING_REG_FD_CB |= _f.Carry;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x06:    // RLC (IY)
+							case 0x06:    // RLC (IY+)
 								res3.b.l = GetValue(IY_OFFSET);
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								res3.b.l |= _f.Carry;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x08:    // RRC
+							case 0x08:    // RRC (IY+
 							case 0x09:
 							case 0x0a:
 							case 0x0b:
@@ -2850,21 +2971,19 @@ aggLDI:
 								WORKING_REG_FD_CB >>= 1;
 								if(_f.Carry)
 									WORKING_REG_FD_CB |= 0x80;
-								else
-									WORKING_REG_FD_CB &= 0x7f;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x0e:    // RRC (IY)
+							case 0x0e:    // RRC (IY+)
 								res3.b.l = GetValue(IY_OFFSET);
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								if(_f.Carry)
 									res3.b.l |= 0x80;
-								else
-									res3.b.l &= 0x7f;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
@@ -2878,26 +2997,22 @@ aggLDI:
 							case 0x17:
 								_f1=_f;
 								WORKING_REG_FD_CB = GetValue(IY_OFFSET);
-								if(WORKING_REG_FD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=WORKING_REG_FD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_FD_CB <<= 1;
 								WORKING_REG_FD_CB |= _f1.Carry;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x16:    // RL (IY)
+							case 0x16:    // RL (IY+)
 								_f1=_f;
 								res3.b.l = GetValue(IY_OFFSET);
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								res3.b.l |= _f1.Carry;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
@@ -2915,27 +3030,25 @@ aggLDI:
 								WORKING_REG_FD_CB >>= 1;
 								if(_f1.Carry)
 									WORKING_REG_FD_CB |= 0x80;
-								else
-									WORKING_REG_FD_CB &= 0x7f;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x1e:    // RR (IY)
+							case 0x1e:    // RR (IY+)
 								_f1=_f;
 								res3.b.l = GetValue(IY_OFFSET);
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								if(_f1.Carry)
 									res3.b.l |= 0x80;
-								else
-									res3.b.l &= 0x7f;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x20:    // SLA
+							case 0x20:    // SLA (IY+
 							case 0x21:
 							case 0x22:
 							case 0x23:
@@ -2943,28 +3056,24 @@ aggLDI:
 							case 0x25:
 							case 0x27:
 								WORKING_REG_FD_CB = GetValue(IY_OFFSET);
-								if(WORKING_REG_FD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=WORKING_REG_FD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_FD_CB <<= 1;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x26:    // SLA
+							case 0x26:    // SLA (IY+
 								res3.b.l = GetValue(IY_OFFSET);
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x28:    // SRA
+							case 0x28:    // SRA (IY+
 							case 0x29:
 							case 0x2a:
 							case 0x2b:
@@ -2976,93 +3085,76 @@ aggLDI:
 								WORKING_REG_FD_CB >>= 1;
 								if(WORKING_REG_FD_CB & 0x40)
 									WORKING_REG_FD_CB |= 0x80;
-								else
-									WORKING_REG_FD_CB &= 0x7f;
-								if(WORKING_REG_FD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
-								WORKING_REG_FD_CB <<= 1;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x2e:    // SRA (IY)
+							case 0x2e:    // SRA (IY+)
 								res3.b.l = GetValue(IY_OFFSET);
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								if(res3.b.l & 0x40)
 									res3.b.l |= 0x80;
-								else
-									res3.b.l &= 0x7f;
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x30:    // SLL
+							case 0x30:    // SLL (IY+
 							case 0x31:
 							case 0x32:
 							case 0x33:
 							case 0x34:
 							case 0x35:
 							case 0x37:
-								_f1=_f;
 								WORKING_REG_FD_CB = GetValue(IY_OFFSET);
-								if(WORKING_REG_FD_CB & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=WORKING_REG_FD_CB & 0x80 ? 1 : 0;
 								WORKING_REG_FD_CB <<= 1;
 								WORKING_REG_FD_CB |= 1;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 							case 0x36:    // SLL (IY)
 								res3.b.l = GetValue(IY_OFFSET);
-								_f1=_f;
-								if(res3.b.l & 0x80)
-									_f.Carry=1;
-								else
-									_f.Carry=0;
+								_f.Carry=res3.b.l & 0x80 ? 1 : 0;
 								res3.b.l <<= 1;
 								res3.b.l |= 1;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
 
 #ifdef Z80_EXTENDED
-							case 0x38:    // SRL
+							case 0x38:    // SRL (IY+
 							case 0x39:
 							case 0x3a:
 							case 0x3b:
 							case 0x3c:
 							case 0x3d:
 							case 0x3f:
-								_f1=_f;
 								WORKING_REG_FD_CB = GetValue(IY_OFFSET);
 								_f.Carry=WORKING_REG_FD_CB & 0x1;
 								WORKING_REG_FD_CB >>= 1;
                 res3.b.l=WORKING_REG_FD_CB;
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 #endif
-							case 0x3e:    // SRL (IY)
+							case 0x3e:    // SRL (IY+)
 								res3.b.l = GetValue(IY_OFFSET);
-								_f1=_f;
 								_f.Carry=res3.b.l & 1;
 								res3.b.l >>= 1;
 								PutValue(IY_OFFSET,res3.b.l);
+        				_pc+=2;
                 goto aggRotate2;
 								break;
 
 #ifdef Z80_EXTENDED
-							case 0x40:    // BIT
+							case 0x40:    // BIT (IY+
 							case 0x41:
 							case 0x42:
 							case 0x43:
@@ -3118,12 +3210,13 @@ aggLDI:
 							case 0x7c:
 							case 0x7d:
 							case 0x7f:
-                res3.b.l=GetValue(IY_OFFSET) & (1 << ((Pipe2.b.h & 0x38) >> 3));
+                res3.b.l=GetValue(IY_OFFSET) & WORKING_BITPOS2;
+        				_pc+=2;
                 goto aggBit;
 								break;
 #endif
 
-							case 0x46:    // BIT (IY)
+							case 0x46:    // BIT (IY+)
 							case 0x4e:
 							case 0x56:
 							case 0x5e:
@@ -3131,7 +3224,8 @@ aggLDI:
 							case 0x6e:
 							case 0x76:
 							case 0x7e:
-                res3.b.l=GetValue(IY_OFFSET) & (1 << ((Pipe2.b.h & 0x38) >> 3));
+                res3.b.l=GetValue(IY_OFFSET) & WORKING_BITPOS2;
+        				_pc+=2;
                 goto aggBit;
 								break;
 
@@ -3192,14 +3286,14 @@ aggLDI:
 							case 0xa7:
 							case 0xaf:
 							case 0xb7:
-							case 0xbf:		// questi non è chiaro cosa dovrebbero fare con la destinazione...
+							case 0xbf:
 								res3.b.l=GetValue(IY_OFFSET);
-								res3.b.l &= ~ (1 << ((Pipe2.b.l & 0x38) >> 3));
-								PutValue(IY_OFFSET,res3.b.l);
+								res3.b.l &= ~ WORKING_BITPOS2;
+								WORKING_REG_FD_CB = res3.b.l;
 								break;
 #endif
 
-							case 0x86:    // RES (IY)
+							case 0x86:    // RES (IY+)
 							case 0x8e:
 							case 0x96:
 							case 0x9e:
@@ -3208,7 +3302,7 @@ aggLDI:
 							case 0xb6:
 							case 0xbe:
 								res3.b.l=GetValue(IY_OFFSET);
-								res3.b.l &= ~ (1 << ((Pipe2.b.l & 0x38) >> 3));
+								res3.b.l &= ~ WORKING_BITPOS2;
 								PutValue(IY_OFFSET,res3.b.l);
 								break;
 
@@ -3268,14 +3362,14 @@ aggLDI:
 							case 0xe7:
 							case 0xef:
 							case 0xf7:
-							case 0xff:						// questi non è chiaro cosa dovrebbero fare con la destinazione...
+							case 0xff:
 								res3.b.l=GetValue(IY_OFFSET);
-								res3.b.l |= (1 << ((Pipe2.b.l & 0x38) >> 3));
-								PutValue(IY_OFFSET,res3.b.l);
+								res3.b.l |= WORKING_BITPOS2;
+								WORKING_REG_FD_CB = res3.b.l;
 								break;
 #endif
 
-							case 0xc6:    // SET (IY)
+							case 0xc6:    // SET (IY+)
 							case 0xce:
 							case 0xd6:
 							case 0xde:
@@ -3284,13 +3378,13 @@ aggLDI:
 							case 0xf6:
 							case 0xfe:
 								res3.b.l=GetValue(IY_OFFSET);
-								res3.b.l |= (1 << ((Pipe2.b.l & 0x38) >> 3));
+								res3.b.l |= WORKING_BITPOS2;
 								PutValue(IY_OFFSET,res3.b.l);
 								break;
 
 							default:
 		//				wsprintf(myBuf,"Istruzione sconosciuta a %04x: %02x",_pc-1,GetValue(_pc-1));
-		//				SetWindowText(hStatusWnd,myBuf);
+                Nop();
 								break;
 							}
 						_pc+=2;
@@ -3298,20 +3392,22 @@ aggLDI:
             
 					case 0x09:    // ADD IY,BC ecc
 					case 0x19:
-//#define WORKING_REG16 regs1.r[((Pipe1 & 0x30) >> 4) +1].x
-            res1.x=_iy;
             res2.x=WORKING_REG16;
+            
+aggSommaIY:            
+            res1.x=_iy;
             res3.d=(DWORD)res1.x+(DWORD)res2.x;
     			  _iy = res3.x;
+            _f.HalfCarry = ((res1.x & 0xfff) + (res2.x & 0xfff)) >= 0x1000 ? 1 : 0;   // 
             _f.AddSub=0;
-            goto aggFlagW;
+            goto aggFlagWC;
 						break;
 					case 0x21:    // LD IY,nn
 						_iy = Pipe2.x;
 						_pc+=2;
 						break;
 					case 0x22:    // LD (nn),IY
-						PutValue(Pipe2.x,_iy);
+						PutIntValue(Pipe2.x,_iy);
             _pc+=2;
 						break;
 					case 0x23:    // INC IY
@@ -3334,14 +3430,11 @@ aggLDI:
 						break;
 #endif
 					case 0x29:    // ADD IY,IY
-            res1.x=res2.x=_iy;
-            res3.d=(DWORD)res1.x+(DWORD)res2.x;
-    			  _iy = res3.x;
-            _f.AddSub=0;
-            goto aggFlagW;
+            res2.x=_iy;
+            goto aggSommaIY;
 						break;
 					case 0x2a:    // LD IY,(nn)
-						_iy = GetValue(Pipe2.x);
+						_iy = GetIntValue(Pipe2.x);
 						_pc+=2;
 						break;
 					case 0x2b:    // DEC IY
@@ -3363,14 +3456,14 @@ aggLDI:
 						_pc++;
 						break;
 #endif
-					case 0x34:    // INC (IY)
+					case 0x34:    // INC (IY+)
 						res3.b.l = GetValue(IY_OFFSET);
 						res3.b.l++;
 						PutValue(IY_OFFSET,res3.b.l);
 						_pc++;
 						goto aggInc;
 						break;
-					case 0x35:    // DEC (IY)
+					case 0x35:    // DEC (IY+)
 						res3.b.l = GetValue(IY_OFFSET);
 						res3.b.l--;
 						PutValue(IY_OFFSET,res3.b.l);
@@ -3378,16 +3471,12 @@ aggLDI:
 						goto aggDec;
 						break;
 					case 0x36:    // LD (IY),n
-						PutValue(IY_OFFSET,Pipe2.b.h);		// VERIFICARE !! ****
+						PutValue(IY_OFFSET,Pipe2.b.h);
 						_pc+=2;
 						break;
 					case 0x39:    // ADD IY,SP
-            res1.x=_iy;
             res2.x=_sp;
-            res3.d=(DWORD)res1.x+(DWORD)res2.x;
-    			  _iy = res3.x;
-            _f.AddSub=0;
-            goto aggFlagW;
+            goto aggSommaIY;
 						break;
 #ifdef Z80_EXTENDED
 					case 0x44:    // LD r,IYh
@@ -3532,8 +3621,8 @@ aggLDI:
 #endif
 					case 0xa6:    // AND (IY+n)
 						_a &= GetValue(IY_OFFSET);
-						_pc++;
             _f.HalfCarry=1;
+						_pc++;
             goto aggAnd;
 						break;
 #ifdef Z80_EXTENDED
@@ -3550,8 +3639,8 @@ aggLDI:
 #endif
 					case 0xae:    // XOR (IY+n)
 						_a ^= GetValue(IY_OFFSET);
-						_pc++;
             _f.HalfCarry=0;
+						_pc++;
             goto aggAnd;
 						break;
 #ifdef Z80_EXTENDED
@@ -3568,23 +3657,24 @@ aggLDI:
 #endif
 					case 0xb6:    // OR (IY+n)
 						_a |= GetValue(IY_OFFSET);
-						_pc++;
             _f.HalfCarry=0;
+						_pc++;
             goto aggAnd;
 						break;
 #ifdef Z80_EXTENDED
 					case 0xbc:    // CP IYh
-            res3.b.l=_a-_iyh;
-						goto aggFlagB;
+						res2.b.l=_iyh;
+						goto compare;
 						break;
 					case 0xbd:    // CP IYl
-            res3.b.l=_a-_iyl;
-						goto aggFlagB;
+						res2.b.l=_iyl;
+						goto compare;
+            break;
 #endif
 					case 0xbe:    // CP (IY+n)
-            res3.b.l=_a - GetValue(IY_OFFSET);
+						res2.b.l=GetValue(IY_OFFSET);
 						_pc++;
-						goto aggFlagB;
+						goto compare;
 						break;
 
 					case 0xe1:    // POP IY
@@ -3609,15 +3699,30 @@ aggLDI:
 
 					default:
 //				wsprintf(myBuf,"Istruzione sconosciuta a %04x: %02x",_pc-1,GetValue(_pc-1));
-//				SetWindowText(hStatusWnd,myBuf);
+            Nop();
 						break;
 					}
 				break;
 
 			case 0xfe:    // CP n
-        res3.b.l=_a - Pipe2.b.l;
+				res2.b.l=Pipe2.b.l;
 				_pc++;
-  			goto aggFlagB;
+        
+compare:        
+				res1.b.l=_a;
+				res1.b.h=res2.b.h=0;
+				res3.x=res1.x-res2.x;
+        _f.HalfCarry = ((res1.b.l & 0xf) - (res2.b.l & 0xf)) & 0xf0 ? 1 : 0;   // 
+        if((res1.b.l & 0x80) != (res2.b.l & 0x80)) {
+          if(((res1.b.l & 0x80) && !(res3.b.l & 0x80)) || (!(res1.b.l & 0x80) && (res3.b.l & 0x80)))
+            _f.PV=1;
+          else
+            _f.PV=0;
+          }
+        else
+          _f.PV=0;
+        _f.AddSub=1;
+  			goto aggFlagBC;
 				break;
 			
 			}
